@@ -1,9 +1,19 @@
+import type { Design } from "./design";
+
+export interface DiagramView {
+  /** Subgraph ids shown collapsed. */
+  collapsed: string[];
+}
+
 export interface Diagram {
   id: string;
   name: string;
   code: string;
   createdAt: number;
   updatedAt: number;
+  /** Per-diagram look; falls back to the default design in settings. */
+  design?: Design;
+  view?: DiagramView;
 }
 
 export function newId(): string {
@@ -11,9 +21,9 @@ export function newId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-export function createDiagram(name: string, code: string): Diagram {
+export function createDiagram(name: string, code: string, design?: Design): Diagram {
   const now = Date.now();
-  return { id: newId(), name, code, createdAt: now, updatedAt: now };
+  return { id: newId(), name, code, createdAt: now, updatedAt: now, ...(design ? { design } : {}) };
 }
 
 const TYPE_LABELS: [RegExp, string][] = [

@@ -56,6 +56,7 @@ export function ExportMenu({
                     value={background}
                     onChange={setBackground}
                     options={[
+                      { value: "theme", label: "Theme" },
                       { value: "transparent", label: "None" },
                       { value: "white", label: "White" },
                       { value: "dark", label: "Dark" },

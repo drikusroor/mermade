@@ -1,11 +1,14 @@
 import { SOURCE_METADATA_ID } from "./importer";
 
-export type ExportBackground = "transparent" | "white" | "dark";
+export type ExportBackground = "transparent" | "white" | "dark" | "theme";
 
-export const BACKGROUND_COLORS: Record<Exclude<ExportBackground, "transparent">, string> = {
-  white: "#ffffff",
-  dark: "#18181b",
-};
+/** Resolve an export background choice to a colour (null = transparent). */
+export function backgroundColor(bg: ExportBackground, themeColor: string): string | null {
+  if (bg === "transparent") return null;
+  if (bg === "white") return "#ffffff";
+  if (bg === "dark") return "#18181b";
+  return themeColor;
+}
 
 export function sanitizeFilename(name: string): string {
   const cleaned = name
@@ -38,7 +41,7 @@ export interface PreparedSvg {
  * Make a Mermaid-rendered SVG standalone: explicit pixel size, xmlns, optional background,
  * serialized as valid XML (Mermaid emits HTML-serialized markup).
  */
-export function prepareSvg(rawSvg: string, opts: { code?: string; background?: ExportBackground } = {}): PreparedSvg {
+export function prepareSvg(rawSvg: string, opts: { code?: string; background?: string | null } = {}): PreparedSvg {
   const host = document.createElement("div");
   host.innerHTML = rawSvg;
   const el = host.querySelector("svg");
@@ -60,9 +63,9 @@ export function prepareSvg(rawSvg: string, opts: { code?: string; background?: E
   el.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
   el.style.removeProperty("max-width");
 
-  if (opts.background && opts.background !== "transparent") {
-    el.style.backgroundColor = BACKGROUND_COLORS[opts.background];
-  }
+  if (opts.background) el.style.backgroundColor = opts.background;
+  // Strip interaction state that the live preview adds.
+  el.classList.remove("mm-interactive", "mm-dimming");
 
   let svg = new XMLSerializer().serializeToString(el);
   if (opts.code !== undefined) svg = embedSource(svg, opts.code);
@@ -71,11 +74,7 @@ export function prepareSvg(rawSvg: string, opts: { code?: string; background?: E
 
 const MAX_CANVAS_SIDE = 16384;
 
-export async function svgToPngBlob(
-  prepared: PreparedSvg,
-  scale: number,
-  background: ExportBackground,
-): Promise<Blob> {
+export async function svgToPngBlob(prepared: PreparedSvg, scale: number, background: string | null): Promise<Blob> {
   const factor = Math.min(scale, MAX_CANVAS_SIDE / prepared.width, MAX_CANVAS_SIDE / prepared.height);
   const w = Math.max(1, Math.round(prepared.width * factor));
   const h = Math.max(1, Math.round(prepared.height * factor));
@@ -94,8 +93,8 @@ export async function svgToPngBlob(
     canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas is not available in this browser");
-    if (background !== "transparent") {
-      ctx.fillStyle = BACKGROUND_COLORS[background];
+    if (background) {
+      ctx.fillStyle = background;
       ctx.fillRect(0, 0, w, h);
     }
     ctx.drawImage(img, 0, 0, w, h);

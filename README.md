@@ -22,7 +22,24 @@ A fast, private Mermaid diagram editor that runs entirely in your browser. There
   - `.mmd` or Markdown, as a download or copied
   - share links. The whole diagram is stored in the URL, in the same format mermaid.live uses.
   - a JSON backup of all diagrams
-- **Themes:** the Mermaid themes plus an "auto" theme that follows the app, a classic or hand-drawn look, and a light, dark or system app theme.
+- **Big-diagram tools (flowcharts):**
+  - **Focus:** click a node or group to highlight everything it connects to and fade the rest. You can pick the depth (1, 2, 3 or all hops) and the direction (both, downstream or upstream).
+  - **Isolate:** redraw just that neighbourhood, so you get a small, clean layout of the part you care about.
+  - **Collapse groups:** turn any subgraph into a single box, or collapse all top-level groups for an overview. Parallel links between collapsed groups merge into one, labelled with a count ("5 links").
+  - **Find:** search a node or group by name and zoom to it. Collapsed groups open automatically to reveal it.
+  - **Code ↔ diagram linking:** selecting something in the diagram highlights its definition in the code, and moving the cursor in the code highlights the matching nodes in the diagram.
+- **Visual editing (flowcharts):** edits are written back into your Mermaid code with targeted patches, so your formatting and comments are kept.
+  - Rename nodes, groups and connection labels in the inspector.
+  - Drag a node onto a group to move it in, or onto empty space to move it out. You can also drag a group by its title.
+  - Alt-drag (or Shift-drag) from one node to another to connect them, or use the inspector's connect button.
+  - Delete or reverse connections, delete nodes, add nodes, wrap nodes in a new group, or ungroup.
+  - Visual edits have their own undo: the Undo button in the toast, or Ctrl/⌘ + Z with the preview focused.
+- **Design:**
+  - One-click presets: Modern, Soft, Outline, Blueprint, Neon, Nord, Sketch, Terminal and Classic.
+  - Mix and match a structural style (modern, soft, outline, glow or classic) with any of 14 palettes, or build your own palette with custom colours.
+  - Colour by group: each top-level subgraph gets its own accent colour.
+  - Choose the font, line style (rounded, smooth, straight or step), spacing, hand-drawn rendering, and the ELK layout engine, which usually untangles busy graphs.
+  - The design is saved per diagram, and exports include it.
 - **Responsive:** on phones, you switch between Code and Preview with tabs.
 
 ## Development
@@ -38,7 +55,11 @@ bun run build      # static production build → dist/
 bun run preview    # serve dist/ at http://localhost:4173/mermade/ (like GitHub Pages)
 ```
 
-Stack: Bun (bundler, dev server, test runner), React 19, Tailwind CSS 4, CodeMirror 6 and Mermaid. Mermaid is lazy-loaded, so the editor appears before the renderer finishes downloading.
+Stack: Bun (bundler, dev server, test runner), React 19, Tailwind CSS 4, CodeMirror 6 and Mermaid. Mermaid is lazy-loaded, so the editor appears before the renderer finishes downloading. ELK is only fetched when a diagram uses it.
+
+### How visual editing stays safe
+
+`src/lib/flow/parse.ts` is a parser for flowcharts that records where every node, connection and group sits in the source text. It mirrors Mermaid's own rules, including which group a node belongs to and how connection IDs are generated. The tests in `tests/flow-*.test.ts` check it against Mermaid's real parser on a set of tricky diagrams, and check every edit operation the same way. As a final guard, the app cross-checks each flowchart against Mermaid's parser while it runs. If the two disagree, visual tools switch off for that diagram instead of risking a bad edit.
 
 ## Deploying to GitHub Pages
 
@@ -56,12 +77,15 @@ To host it somewhere else, upload the contents of `dist/` to any static file hos
 ```
 index.html                 entry (Bun HTML bundling)
 src/App.tsx                app shell: layout, state, actions, shortcuts
-src/components/            Editor, Preview, Sidebar, dialogs, menus, UI primitives
+src/components/            Editor, Preview, Inspector & graph toolbar, Design panel, Sidebar, dialogs
 src/lib/storage.ts         IndexedDB persistence + cross-tab sync + settings
 src/lib/render.ts          serialized Mermaid rendering
 src/lib/importer.ts        file / markdown / link import
 src/lib/exporter.ts        SVG/PNG/Markdown export helpers
 src/lib/share.ts           mermaid.live-compatible share links
+src/lib/design.ts          styles, palettes and compiling them to Mermaid config
+src/lib/flow/              flowchart parser, source edits, views (collapse/focus/isolate), SVG mapping
+src/hooks/useGraph.ts      selection, focus, collapse and visual edits with undo
 scripts/build.ts           production build
 tests/                     bun test suites
 ```

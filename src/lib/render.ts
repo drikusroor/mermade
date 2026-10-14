@@ -1,4 +1,5 @@
 import type { Mermaid, MermaidConfig } from "mermaid";
+import type { FlowModel } from "./flow/parse";
 
 export interface RenderOk {
   ok: true;
@@ -12,16 +13,18 @@ export interface RenderErr {
 }
 export type RenderResult = RenderOk | RenderErr;
 
-export interface RenderOptions {
-  theme: string;
-  look: "classic" | "handDrawn";
-}
-
 let mermaidPromise: Promise<Mermaid> | null = null;
 /** Mermaid is large; load it lazily so the editor shell paints immediately. */
 export function loadMermaid(): Promise<Mermaid> {
   mermaidPromise ??= import("mermaid").then((m) => m.default);
   return mermaidPromise;
+}
+
+let elkPromise: Promise<void> | null = null;
+/** The ELK layout engine is only fetched when a diagram asks for it. */
+function ensureElk(mermaid: Mermaid): Promise<void> {
+  elkPromise ??= import("@mermaid-js/layout-elk").then((m) => mermaid.registerLayoutLoaders(m.default));
+  return elkPromise;
 }
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -34,21 +37,12 @@ export function errorLine(message: string): number | null {
 }
 
 /** Mermaid's render is not re-entrant, so calls are serialized. */
-export function renderDiagram(code: string, opts: RenderOptions): Promise<RenderResult> {
+export function renderDiagram(code: string, config: MermaidConfig): Promise<RenderResult> {
   const job = queue.then(async (): Promise<RenderResult> => {
     const mermaid = await loadMermaid();
-    const configKey = `${opts.theme}|${opts.look}`;
+    if (config.layout === "elk") await ensureElk(mermaid);
+    const configKey = JSON.stringify(config);
     if (configKey !== lastConfigKey) {
-      const config: MermaidConfig = {
-        startOnLoad: false,
-        theme: opts.theme as MermaidConfig["theme"],
-        look: opts.look,
-        securityLevel: "strict",
-        // SVG text labels (instead of HTML in <foreignObject>) export cleanly to PNG everywhere.
-        htmlLabels: false,
-        flowchart: { htmlLabels: false },
-        fontFamily: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-      };
       mermaid.initialize(config);
       lastConfigKey = configKey;
     }
@@ -65,6 +59,41 @@ export function renderDiagram(code: string, opts: RenderOptions): Promise<Render
       // Mermaid leaves temporary containers behind when rendering fails.
       document.getElementById(id)?.remove();
       document.getElementById(`d${id}`)?.remove();
+    }
+  });
+  queue = job.catch(() => undefined);
+  return job;
+}
+
+interface FlowDb {
+  getEdges(): { id: string; start: string; end: string }[];
+  getSubGraphs(): { id: string; nodes: string[] }[];
+}
+
+/**
+ * Cross-check our source parser against Mermaid's on the real diagram. Visual editing is only
+ * offered when both agree on every edge and every group's members. Returns null if Mermaid
+ * can't parse the code at all (that's a syntax error, reported by the renderer).
+ */
+export function verifyFlowModel(code: string, model: FlowModel): Promise<boolean | null> {
+  const job = queue.then(async () => {
+    const mermaid = await loadMermaid();
+    try {
+      const d = await mermaid.mermaidAPI.getDiagramFromText(code);
+      const db = d.db as unknown as FlowDb;
+      const edges = db.getEdges();
+      if (edges.length !== model.edges.length) return false;
+      if (edges.some((e, i) => e.id !== model.edges[i]!.id || e.start !== model.edges[i]!.from || e.end !== model.edges[i]!.to)) return false;
+      for (const sg of db.getSubGraphs()) {
+        const ours = model.subgraphs.get(sg.id);
+        if (!ours) return false;
+        const a = [...new Set(sg.nodes)].sort().join("\u0000");
+        const b = [...new Set(ours.members)].sort().join("\u0000");
+        if (a !== b) return false;
+      }
+      return true;
+    } catch {
+      return null;
     }
   });
   queue = job.catch(() => undefined);
