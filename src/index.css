@@ -27,6 +27,7 @@
   --cm-active-line: rgb(244 244 245 / 0.7);
   --cm-selection: rgb(14 116 144 / 0.18);
   --cm-match: rgb(250 204 21 / 0.3);
+  --cm-linked: rgb(8 145 178 / 0.08);
   --cm-tooltip-bg: #ffffff;
   --cm-tooltip-border: #e4e4e7;
   --cm-keyword: #7c3aed;
@@ -45,6 +46,7 @@
   --cm-active-line: rgb(39 39 42 / 0.6);
   --cm-selection: rgb(34 211 238 / 0.22);
   --cm-match: rgb(250 204 21 / 0.18);
+  --cm-linked: rgb(34 211 238 / 0.1);
   --cm-tooltip-bg: #18181b;
   --cm-tooltip-border: #3f3f46;
   --cm-keyword: #c4b5fd;
@@ -76,18 +78,13 @@ body.resizing * {
   pointer-events: none;
 }
 
-/* Dotted canvas behind the diagram; its color follows the diagram theme, not the app theme. */
+/* Dot grid behind the diagram; the canvas colour itself comes from the diagram's palette. */
 .preview-canvas {
-  background-color: #fafafa;
   background-image: radial-gradient(circle, rgb(0 0 0 / 0.09) 1px, transparent 1px);
   background-size: 20px 20px;
 }
 .preview-canvas-dark {
-  background-color: #18181b;
   background-image: radial-gradient(circle, rgb(255 255 255 / 0.07) 1px, transparent 1px);
-}
-:fullscreen {
-  background: #fafafa;
 }
 
 /* Template thumbnails: scale the SVG to fit the card. */
@@ -104,4 +101,86 @@ dialog::backdrop {
 }
 dialog[open] {
   animation: pop 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+/* ---------- interactive diagram states ----------
+   `:is(.x, #mm-x)` lifts specificity to id level so these beat Mermaid's scoped `#svgid …` rules. */
+:root {
+  --mm-accent: #0891b2;
+  --mm-accent-soft: rgb(8 145 178 / 0.35);
+}
+:is(.mm-interactive, #mm-x) .node,
+:is(.mm-interactive, #mm-x) .cluster-label,
+:is(.mm-interactive, #mm-x) .edgeLabel {
+  cursor: pointer;
+}
+:is(.mm-interactive, #mm-x) .mm-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16px;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+:is(.mm-interactive, #mm-x) .node,
+:is(.mm-interactive, #mm-x) .cluster,
+:is(.mm-interactive, #mm-x) .edgePaths path,
+:is(.mm-interactive, #mm-x) .edgeLabel {
+  transition: opacity 160ms ease;
+}
+:is(.mm-dimming, #mm-x) .node:not(.mm-hl.mm-hl):not(.mm-sel.mm-sel) {
+  opacity: 0.16;
+}
+:is(.mm-dimming, #mm-x) .cluster:not(.mm-hl.mm-hl):not(.mm-sel.mm-sel) {
+  opacity: 0.45;
+}
+:is(.mm-dimming, #mm-x) .edgePaths path[data-edge]:not(.mm-hl.mm-hl):not(.mm-sel.mm-sel),
+:is(.mm-dimming, #mm-x) .edgeLabel:not(.mm-hl.mm-hl):not(.mm-sel.mm-sel) {
+  opacity: 0.07;
+}
+:is(.mm-dimming, #mm-x) path[data-edge].mm-hl.mm-hl {
+  stroke: var(--mm-accent) !important;
+  stroke-width: 2.5px !important;
+}
+:is(.mm-interactive, #mm-x) .node.mm-sel.mm-sel :is(rect, polygon, circle, ellipse, path).label-container,
+:is(.mm-interactive, #mm-x) .node.mm-sel.mm-sel > :is(rect, polygon, circle, ellipse, path):first-child,
+:is(.mm-interactive, #mm-x) .cluster.mm-sel.mm-sel > rect {
+  stroke: var(--mm-accent) !important;
+  stroke-width: 2.5px !important;
+}
+:is(.mm-interactive, #mm-x) .node.mm-sel.mm-sel {
+  filter: drop-shadow(0 0 6px var(--mm-accent-soft));
+}
+:is(.mm-interactive, #mm-x) path[data-edge].mm-sel.mm-sel {
+  stroke: var(--mm-accent) !important;
+  stroke-width: 3px !important;
+}
+:is(.mm-interactive, #mm-x) .node.mm-cursor.mm-cursor:not(.mm-sel.mm-sel) {
+  filter: drop-shadow(0 0 4px rgb(234 179 8 / 0.8));
+}
+:is(.mm-interactive, #mm-x) .node.mm-source.mm-source {
+  filter: drop-shadow(0 0 8px rgb(8 145 178 / 0.9));
+}
+:is(.mm-interactive, #mm-x) .mm-drop.mm-drop > rect,
+:is(.mm-interactive, #mm-x) .node.mm-drop.mm-drop :is(rect, polygon, circle, path):first-child {
+  stroke: var(--mm-accent) !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 6 4 !important;
+}
+:is(.mm-interactive, #mm-x) .cluster.mm-drop.mm-drop > rect {
+  fill: rgb(8 145 178 / 0.08) !important;
+}
+:is(.mm-interactive, #mm-x) .mm-dragging {
+  opacity: 0.85;
+  pointer-events: none;
+  filter: drop-shadow(0 10px 20px rgb(0 0 0 / 0.25));
+  cursor: grabbing;
+}
+.mm-connect-line {
+  stroke: var(--mm-accent);
+  stroke-width: 2.5px;
+  stroke-dasharray: 6 5;
+  fill: none;
+}
+.mm-connect-dot {
+  fill: var(--mm-accent);
 }

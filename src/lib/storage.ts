@@ -1,4 +1,5 @@
 import type { Diagram } from "./diagram";
+import { DEFAULT_DESIGN, type Design, type Palette } from "./design";
 
 /**
  * Diagrams live in IndexedDB (falls back to memory when unavailable, e.g. some private modes).
@@ -75,26 +76,27 @@ export function subscribeToSync(handler: (msg: SyncMessage) => void): () => void
 
 export interface Settings {
   activeId: string | null;
-  mermaidTheme: string;
-  look: "classic" | "handDrawn";
   appTheme: "system" | "light" | "dark";
   layout: "split" | "editor" | "preview";
   splitRatio: number;
   sidebarOpen: boolean;
   pngScale: number;
-  background: "transparent" | "white" | "dark";
+  background: "transparent" | "white" | "dark" | "theme";
+  /** Design for new diagrams (and existing ones without their own). */
+  defaultDesign: Design;
+  customPalettes: Palette[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   activeId: null,
-  mermaidTheme: "auto",
-  look: "classic",
   appTheme: "system",
   layout: "split",
-  splitRatio: 0.42,
+  splitRatio: 0.38,
   sidebarOpen: true,
   pngScale: 2,
-  background: "white",
+  background: "theme",
+  defaultDesign: DEFAULT_DESIGN,
+  customPalettes: [],
 };
 
 const SETTINGS_KEY = "mermade:settings";
@@ -102,7 +104,9 @@ const SETTINGS_KEY = "mermade:settings";
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    return raw ? { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) } : DEFAULT_SETTINGS;
+    if (!raw) return DEFAULT_SETTINGS;
+    const parsed = JSON.parse(raw) as Partial<Settings>;
+    return { ...DEFAULT_SETTINGS, ...parsed, defaultDesign: { ...DEFAULT_DESIGN, ...parsed.defaultDesign } };
   } catch {
     return DEFAULT_SETTINGS;
   }

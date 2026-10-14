@@ -1,29 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Columns2,
-  FileUp,
-  Keyboard,
-  Monitor,
-  Moon,
-  Palette,
-  PanelLeft,
-  PanelLeftClose,
-  Plus,
-  Square,
-  Sun,
-  Code2,
-  Eye,
-  Check,
-  Loader2,
-} from "lucide-react";
+import { Columns2, FileUp, Keyboard, Palette, PanelLeft, PanelLeftClose, Plus, Square, Code2, Eye, Check, Loader2 } from "lucide-react";
 import { Editor } from "./components/Editor";
 import { Preview } from "./components/Preview";
 import { Sidebar } from "./components/Sidebar";
-import { TemplatePicker } from "./components/TemplatePicker";
+import { TemplatePicker, type CompileFn } from "./components/TemplatePicker";
+import { DesignPanel } from "./components/DesignPanel";
+import { GraphToolbar, Inspector } from "./components/GraphTools";
+import { useGraph } from "./hooks/useGraph";
+import { compileDesign, type Design } from "./lib/design";
+import { tryParseFlow, type FlowModel } from "./lib/flow/parse";
+import type { MermaidConfig } from "mermaid";
 import { ImportDialog } from "./components/ImportDialog";
 import { ExportMenu, type ExportAction } from "./components/ExportMenu";
-import { Button, IconButton, Menu, MenuItem, MenuLabel, MenuSeparator, Modal, cx, useToast } from "./components/ui";
-import { createDiagram, detectDiagramType, type Diagram } from "./lib/diagram";
+import { Button, IconButton, Modal, cx, useToast } from "./components/ui";
+import { createDiagram, detectDiagramType, type Diagram, type DiagramView } from "./lib/diagram";
 import { DEFAULT_TEMPLATE, type Template } from "./lib/templates";
 import {
   deleteDiagram,
@@ -34,10 +24,11 @@ import {
   subscribeToSync,
   type Settings,
 } from "./lib/storage";
-import { MERMAID_THEMES, renderDiagram, loadMermaid, type RenderOptions } from "./lib/render";
+import { renderDiagram, loadMermaid } from "./lib/render";
 import { parseImport, parseText, type ImportedDiagram } from "./lib/importer";
 import { decodeState, buildShareUrl } from "./lib/share";
 import {
+  backgroundColor,
   copyPng,
   copyText,
   downloadBlob,
@@ -48,7 +39,6 @@ import {
   toMarkdown,
 } from "./lib/exporter";
 
-const DARK_MERMAID_THEMES = new Set(["dark", "neo-dark", "redux-dark", "redux-dark-color"]);
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const MOD = isMac ? "⌘" : "Ctrl";
 
@@ -71,7 +61,9 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [svg, setSvg] = useState<string | null>(null);
+  const [rendered, setRendered] = useState<{ svg: string; model: FlowModel | null } | null>(null);
+  const svg = rendered?.svg ?? null;
+  const [designOpen, setDesignOpen] = useState(false);
   const [error, setError] = useState<{ message: string; line: number | null } | null>(null);
   const [renderMs, setRenderMs] = useState<number | null>(null);
   const [rendererLoading, setRendererLoading] = useState(true);
@@ -86,6 +78,8 @@ export function App() {
   const appDark = settings.appTheme === "dark" || (settings.appTheme === "system" && systemDark);
 
   const update = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   useEffect(() => saveSettings(settings), [settings]);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", appDark);
@@ -96,9 +90,7 @@ export function App() {
     [diagrams, settings.activeId],
   );
 
-  const mermaidTheme = settings.mermaidTheme === "auto" ? (appDark ? "dark" : "default") : settings.mermaidTheme;
-  const darkCanvas = DARK_MERMAID_THEMES.has(mermaidTheme);
-  const renderOpts = useMemo<RenderOptions>(() => ({ theme: mermaidTheme, look: settings.look }), [mermaidTheme, settings.look]);
+  const design: Design = active?.design ?? settings.defaultDesign;
 
   /* ---------------- persistence ---------------- */
 
@@ -142,7 +134,7 @@ export function App() {
   const addDiagrams = useCallback(
     (items: ImportedDiagram[], select = true) => {
       if (!items.length) return [];
-      const created = items.map((i) => createDiagram(i.name, i.code));
+      const created = items.map((i) => createDiagram(i.name, i.code, settingsRef.current.defaultDesign));
       setDiagrams((ds) => [...created, ...ds]);
       queueSave(created);
       if (select) update({ activeId: created[0]!.id });
@@ -204,10 +196,12 @@ export function App() {
   const diagramsRef = useRef(diagrams);
   diagramsRef.current = diagrams;
   const patchDiagram = useCallback(
-    (id: string, patch: Partial<Pick<Diagram, "name" | "code">>) => {
+    (id: string, patch: Partial<Pick<Diagram, "name" | "code" | "design" | "view">>) => {
       const current = diagramsRef.current.find((d) => d.id === id);
       if (!current) return;
-      const changed = { ...current, ...patch, updatedAt: Date.now() };
+      // Collapsing groups is a view change, not an edit.
+      const isEdit = "name" in patch || "code" in patch || "design" in patch;
+      const changed = { ...current, ...patch, updatedAt: isEdit ? Date.now() : current.updatedAt };
       diagramsRef.current = diagramsRef.current.map((d) => (d.id === id ? changed : d));
       setDiagrams(diagramsRef.current);
       queueSave([changed]);
@@ -215,34 +209,81 @@ export function App() {
     [queueSave],
   );
 
+  /* ---------------- graph tools ---------------- */
+
+  const activeIdRef = useRef("");
+  activeIdRef.current = active?.id ?? "";
+  const patchCode = useCallback((c: string) => patchDiagram(activeIdRef.current, { code: c }), [patchDiagram]);
+  const patchView = useCallback((v: DiagramView) => patchDiagram(activeIdRef.current, { view: v }), [patchDiagram]);
+  const g = useGraph({ active, patchCode, patchView, toast });
+
   /* ---------------- rendering ---------------- */
 
   const code = active?.code ?? "";
   const activeId = active?.id ?? "";
   useEffect(() => {
-    setSvg(null);
+    setRendered(null);
     setError(null);
   }, [activeId]);
+
+  const viewCodeKey = g.view?.code ?? null;
+  const compiled = useMemo(
+    () => compileDesign(design, { appDark, customPalettes: settings.customPalettes, model: g.model, viewModel: g.view?.model }),
+    // The view model is fully determined by its code.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [design, appDark, settings.customPalettes, g.model, viewCodeKey],
+  );
+  const renderCode = useMemo(() => {
+    const body = viewCodeKey ?? code;
+    return compiled.extraCode ? `${body.replace(/\s*$/, "")}\n${compiled.extraCode}\n` : body;
+  }, [viewCodeKey, code, compiled.extraCode]);
+  const renderConfigKey = JSON.stringify(compiled.config);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const renderConfig = useMemo(() => compiled.config as MermaidConfig, [renderConfigKey]);
+  const viewModel = g.view?.model ?? null;
 
   useEffect(() => {
     if (!ready) return;
     let stale = false;
     const t = setTimeout(async () => {
-      const result = await renderDiagram(code, renderOpts);
+      const result = await renderDiagram(renderCode, renderConfig);
       if (stale) return;
       if (result.ok) {
-        setSvg(result.svg);
+        setRendered({ svg: result.svg, model: viewModel });
         setError(null);
         setRenderMs(result.ms);
       } else {
-        setError({ message: result.message, line: result.line });
+        setError({ message: result.message, line: g.view && g.view.code !== code ? null : result.line });
       }
-    }, 200);
+    }, 150);
     return () => {
       stale = true;
       clearTimeout(t);
     };
-  }, [code, renderOpts, ready]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderCode, renderConfig, ready]);
+
+  const compileForThumb: CompileFn = useCallback(
+    (c: string) => {
+      const m = tryParseFlow(c);
+      const out = compileDesign(design, { appDark, customPalettes: settings.customPalettes, model: m });
+      return { code: out.extraCode ? `${c}\n${out.extraCode}` : c, config: out.config as MermaidConfig, canvas: out.canvas };
+    },
+    [design, appDark, settings.customPalettes],
+  );
+
+  const setDesign = (d: Design) => {
+    if (active) patchDiagram(active.id, { design: d });
+    update({ defaultDesign: d });
+  };
+  const applyDesignToAll = () => {
+    const next = diagramsRef.current.map((d) => ({ ...d, design }));
+    diagramsRef.current = next;
+    setDiagrams(next);
+    queueSave(next);
+    update({ defaultDesign: design });
+    toast({ kind: "success", message: `Applied to ${next.length} diagram${next.length === 1 ? "" : "s"}` });
+  };
 
   /* ---------------- actions ---------------- */
 
@@ -253,7 +294,9 @@ export function App() {
 
   const duplicate = (id: string) => {
     const d = diagrams.find((x) => x.id === id);
-    if (d) addDiagrams([{ name: `${d.name} (copy)`, code: d.code }]);
+    if (!d) return;
+    const [copy] = addDiagrams([{ name: `${d.name} (copy)`, code: d.code }]);
+    if (copy && d.design) patchDiagram(copy.id, { design: d.design });
   };
 
   const remove = (id: string) => {
@@ -315,6 +358,7 @@ export function App() {
   const doExport = async (action: ExportAction) => {
     if (!active) return;
     const file = sanitizeFilename(active.name);
+    const exportBg = backgroundColor(settings.background, compiled.canvas);
     const needsImage = ["svg", "png", "copy-png", "copy-svg"].includes(action);
     if (needsImage && (!svg || error)) {
       toast({ kind: "error", message: "Fix the diagram's errors before exporting an image" });
@@ -323,23 +367,23 @@ export function App() {
     try {
       switch (action) {
         case "svg": {
-          const p = prepareSvg(svg!, { code: active.code, background: settings.background });
+          const p = prepareSvg(svg!, { code: active.code, background: exportBg });
           downloadText(p.svg, `${file}.svg`, "image/svg+xml");
           break;
         }
         case "png": {
-          const p = prepareSvg(svg!, { background: settings.background });
-          downloadBlob(await svgToPngBlob(p, settings.pngScale, settings.background), `${file}.png`);
+          const p = prepareSvg(svg!, { background: exportBg });
+          downloadBlob(await svgToPngBlob(p, settings.pngScale, exportBg), `${file}.png`);
           break;
         }
         case "copy-png": {
-          const p = prepareSvg(svg!, { background: settings.background });
-          await copyPng(svgToPngBlob(p, settings.pngScale, settings.background));
+          const p = prepareSvg(svg!, { background: exportBg });
+          await copyPng(svgToPngBlob(p, settings.pngScale, exportBg));
           toast({ kind: "success", message: "PNG copied to clipboard" });
           break;
         }
         case "copy-svg":
-          await copyText(prepareSvg(svg!, { code: active.code, background: settings.background }).svg);
+          await copyText(prepareSvg(svg!, { code: active.code, background: exportBg }).svg);
           toast({ kind: "success", message: "SVG markup copied" });
           break;
         case "mmd":
@@ -353,7 +397,7 @@ export function App() {
           toast({ kind: "success", message: "Markdown copied" });
           break;
         case "copy-link": {
-          const url = await buildShareUrl({ code: active.code, theme: mermaidTheme });
+          const url = await buildShareUrl({ code: active.code, theme: compiled.dark ? "dark" : "default" });
           await copyText(url);
           toast({ kind: "success", message: "Share link copied — the diagram lives entirely in the URL" });
           break;
@@ -363,7 +407,7 @@ export function App() {
             app: "mermade",
             version: 1,
             exportedAt: new Date().toISOString(),
-            diagrams: diagrams.map(({ name, code, createdAt, updatedAt }) => ({ name, code, createdAt, updatedAt })),
+            diagrams: diagrams.map(({ name, code, createdAt, updatedAt, design, view }) => ({ name, code, createdAt, updatedAt, design, view })),
           };
           downloadText(JSON.stringify(data, null, 2), `mermade-backup-${new Date().toISOString().slice(0, 10)}.json`, "application/json");
           break;
@@ -523,7 +567,15 @@ export function App() {
             <FileUp className="size-4" />
             <span className="hidden lg:inline">Import</span>
           </Button>
-          <AppearanceMenu settings={settings} update={update} />
+          <Button
+            variant={designOpen ? "secondary" : "ghost"}
+            onClick={() => setDesignOpen((o) => !o)}
+            title="Design: styles, palettes, layout"
+            className="px-2 sm:px-3"
+          >
+            <Palette className="size-4" />
+            <span className="hidden lg:inline">Design</span>
+          </Button>
           <IconButton label="Keyboard shortcuts (?)" onClick={() => setModal("shortcuts")} className="hidden sm:inline-flex">
             <Keyboard className="size-4" />
           </IconButton>
@@ -581,7 +633,11 @@ export function App() {
                     value={active.code}
                     onChange={(c) => patchDiagram(active.id, { code: c })}
                     error={error}
-                    onCursor={(line, col) => setCursor({ line, col })}
+                    onCursor={(line, col, offset) => {
+                      setCursor({ line, col });
+                      g.setCursorOffset(offset);
+                    }}
+                    highlight={g.editorHighlight}
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm text-zinc-500">
@@ -638,12 +694,77 @@ export function App() {
                   svg={svg}
                   error={error?.message ?? null}
                   loading={rendererLoading}
-                  darkCanvas={darkCanvas}
+                  canvas={compiled.canvas}
+                  dark={compiled.dark}
+                  viewModel={!error && rendered?.model && g.model ? rendered.model : null}
+                  selection={g.selection}
+                  onSelect={g.setSelection}
+                  highlight={g.highlight}
+                  cursorNodes={g.cursorNodes}
+                  connectFrom={g.connectFrom}
+                  onConnect={g.actions.addEdge}
+                  onCancelConnect={() => g.setConnectFrom(null)}
+                  onMoveNode={g.actions.moveNode}
+                  onMoveGroup={g.actions.moveGroup}
+                  onToggleCollapse={g.toggleCollapse}
+                  onDeleteSelection={g.deleteSelection}
+                  onUndo={g.undo}
+                  onRename={g.bumpRename}
+                  zoomTo={g.zoomTo}
+                  parentOf={g.parentOf}
+                  titleOf={g.title}
+                  toolbar={
+                    g.unsupported ? (
+                      <div className="absolute left-3 top-3 z-10 rounded-xl bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-900 shadow-sm dark:bg-amber-900/60 dark:text-amber-100">
+                        Visual tools are off for this diagram — it uses syntax Mermade can't edit safely yet.
+                      </div>
+                    ) : g.model && (
+                      <GraphToolbar
+                        model={g.model}
+                        collapsed={g.collapsed}
+                        setCollapsed={g.setCollapsed}
+                        focus={g.focus}
+                        setFocus={g.setFocus}
+                        focusTarget={g.focusTarget}
+                        hiddenNodes={g.view?.hiddenNodes ?? 0}
+                        onFind={g.find}
+                        onAddNode={() => g.actions.addNode(g.selection?.kind === "group" ? g.selection.id : null)}
+                        connecting={g.connectFrom}
+                        onCancelConnect={() => g.setConnectFrom(null)}
+                      />
+                    )
+                  }
+                  inspector={
+                    g.model && (
+                      <Inspector
+                        model={g.model}
+                        selection={g.selection}
+                        edgeSources={g.edgeSources}
+                        collapsed={g.collapsed}
+                        actions={g.actions}
+                        renameKey={g.renameKey}
+                        connecting={!!g.connectFrom}
+                        onClose={() => g.setSelection(null)}
+                      />
+                    )
+                  }
                 />
               )}
             </section>
           )}
         </main>
+        <DesignPanel
+          open={designOpen}
+          onClose={() => setDesignOpen(false)}
+          design={design}
+          setDesign={setDesign}
+          customPalettes={settings.customPalettes}
+          setCustomPalettes={(customPalettes) => update({ customPalettes })}
+          appTheme={settings.appTheme}
+          setAppTheme={(appTheme) => update({ appTheme })}
+          appDark={appDark}
+          onApplyToAll={applyDesignToAll}
+        />
       </div>
 
       {/* ---------- mobile tab bar ---------- */}
@@ -687,8 +808,7 @@ export function App() {
         open={modal === "templates"}
         onClose={() => setModal(null)}
         onPick={newFromTemplate}
-        renderOpts={renderOpts}
-        darkCanvas={darkCanvas}
+        compile={compileForThumb}
       />
       <ImportDialog
         open={modal === "import"}
@@ -748,66 +868,6 @@ function Segmented3({ value, onChange }: { value: Settings["layout"]; onChange: 
   );
 }
 
-function AppearanceMenu({ settings, update }: { settings: Settings; update: (p: Partial<Settings>) => void }) {
-  const tick = (on: boolean) => <Check className={cx("size-3.5", !on && "invisible")} />;
-  return (
-    <Menu
-      width="w-60"
-      trigger={({ toggle, open }) => (
-        <IconButton label="Appearance" onClick={toggle} active={open}>
-          <Palette className="size-4" />
-        </IconButton>
-      )}
-    >
-      {(close) => (
-        <>
-          <MenuLabel>Diagram theme</MenuLabel>
-          {MERMAID_THEMES.map((t) => (
-            <MenuItem key={t.id} icon={tick(settings.mermaidTheme === t.id)} onClick={() => (update({ mermaidTheme: t.id }), close())}>
-              {t.label}
-            </MenuItem>
-          ))}
-          <MenuSeparator />
-          <MenuLabel>Style</MenuLabel>
-          <MenuItem icon={tick(settings.look === "classic")} onClick={() => (update({ look: "classic" }), close())}>
-            Classic
-          </MenuItem>
-          <MenuItem icon={tick(settings.look === "handDrawn")} onClick={() => (update({ look: "handDrawn" }), close())}>
-            Hand-drawn
-          </MenuItem>
-          <MenuSeparator />
-          <MenuLabel>App theme</MenuLabel>
-          <div className="grid grid-cols-3 gap-1 px-1.5 pb-1">
-            {(
-              [
-                ["light", "Light", Sun],
-                ["dark", "Dark", Moon],
-                ["system", "System", Monitor],
-              ] as const
-            ).map(([v, label, Icon]) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => update({ appTheme: v })}
-                aria-pressed={settings.appTheme === v}
-                className={cx(
-                  "flex flex-col items-center gap-1 rounded-md border py-2 text-xs",
-                  settings.appTheme === v
-                    ? "border-cyan-600 bg-cyan-50 text-cyan-800 dark:bg-cyan-950/50 dark:text-cyan-300"
-                    : "border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800",
-                )}
-              >
-                <Icon className="size-4" />
-                {label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </Menu>
-  );
-}
-
 function ShortcutList() {
   const rows: [string, string][] = [
     [`${MOD} S`, "Save now (changes also save automatically)"],
@@ -821,6 +881,13 @@ function ShortcutList() {
     ["+ / − / 0 / 1", "Zoom in / out / fit / 100% (preview focused)"],
     [`${MOD} scroll`, "Zoom preview at cursor"],
     ["Double-click preview", "Fit to screen"],
+    ["Click node / line / group", "Select it, highlight its connections, edit in the inspector"],
+    ["Drag a node onto a group", "Move it into that group (drag out to move to top level)"],
+    ["Alt-drag between nodes", "Create a connection"],
+    ["Double-click a group", "Collapse / expand it"],
+    ["Del", "Delete the selected node or connection"],
+    [`${MOD} Z (preview focused)`, "Undo the last visual edit"],
+    ["F2 / Enter", "Rename the selection"],
     ["?", "Show this help"],
   ];
   return (

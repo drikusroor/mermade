@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { EditorState } from "@codemirror/state";
+import { EditorState, StateEffect, StateField, type Range } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -12,6 +12,8 @@ import {
   crosshairCursor,
   highlightSpecialChars,
   placeholder,
+  Decoration,
+  type DecorationSet,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
@@ -27,10 +29,39 @@ interface EditorProps {
   value: string;
   onChange: (value: string) => void;
   error: { line: number | null; message: string } | null;
-  onCursor?: (line: number, col: number) => void;
+  onCursor?: (line: number, col: number, offset: number) => void;
+  /** Source ranges to highlight (e.g. the definition of the node selected in the preview). */
+  highlight?: { from: number; to: number }[] | null;
 }
 
-const highlight = HighlightStyle.define([
+const setHighlight = StateEffect.define<{ from: number; to: number }[]>();
+const highlightLine = Decoration.line({ class: "cm-linked-line" });
+const highlightField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setHighlight)) continue;
+      const ranges: Range<Decoration>[] = [];
+      const seen = new Set<number>();
+      for (const r of e.value) {
+        if (r.from > tr.state.doc.length) continue;
+        const first = tr.state.doc.lineAt(r.from).number;
+        const last = tr.state.doc.lineAt(Math.min(r.to, tr.state.doc.length)).number;
+        for (let n = first; n <= last; n++) {
+          const line = tr.state.doc.line(n);
+          if (!seen.has(line.from)) ranges.push(highlightLine.range(line.from));
+          seen.add(line.from);
+        }
+      }
+      deco = Decoration.set(ranges.sort((a, b) => a.from - b.from));
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+const syntaxColors = HighlightStyle.define([
   { tag: [t.typeName, t.keyword], color: "var(--cm-keyword)", fontWeight: "600" },
   { tag: [t.string, t.special(t.string)], color: "var(--cm-string)" },
   { tag: [t.number, t.bool], color: "var(--cm-number)" },
@@ -67,9 +98,10 @@ const baseTheme = EditorView.theme({
     textUnderlineOffset: "3px",
   },
   ".cm-lint-marker": { width: "0.9em", height: "0.9em" },
+  ".cm-linked-line": { backgroundColor: "var(--cm-linked)", boxShadow: "inset 3px 0 0 var(--cm-caret)" },
 });
 
-export function Editor({ docKey, value, onChange, error, onCursor }: EditorProps) {
+export function Editor({ docKey, value, onChange, error, onCursor, highlight }: EditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callbacks = useRef({ onChange, onCursor });
@@ -118,16 +150,17 @@ export function Editor({ docKey, value, onChange, error, onCursor }: EditorProps
             indentWithTab,
           ]),
           mermaid(),
-          syntaxHighlighting(highlight),
+          syntaxHighlighting(syntaxColors),
           baseTheme,
           placeholder("Type Mermaid code here…"),
+          highlightField,
           EditorView.lineWrapping,
           EditorView.updateListener.of((u) => {
             if (u.docChanged) callbacks.current.onChange(u.state.doc.toString());
             if (u.selectionSet || u.docChanged) {
               const head = u.state.selection.main.head;
               const line = u.state.doc.lineAt(head);
-              callbacks.current.onCursor?.(line.number, head - line.from + 1);
+              callbacks.current.onCursor?.(line.number, head - line.from + 1, head);
             }
           }),
         ],
@@ -140,7 +173,14 @@ export function Editor({ docKey, value, onChange, error, onCursor }: EditorProps
     const v = view.current;
     if (!v) return;
     const current = v.state.doc.toString();
-    if (current !== value) v.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+    if (current === value) return;
+    // Replace only the changed middle so the cursor and undo history stay sensible.
+    let start = 0;
+    while (start < current.length && start < value.length && current[start] === value[start]) start++;
+    let endA = current.length;
+    let endB = value.length;
+    while (endA > start && endB > start && current[endA - 1] === value[endB - 1]) (endA--, endB--);
+    v.dispatch({ changes: { from: start, to: endA, insert: value.slice(start, endB) } });
   }, [value]);
 
   // Show render errors as diagnostics on the offending line.
@@ -159,6 +199,17 @@ export function Editor({ docKey, value, onChange, error, onCursor }: EditorProps
       ]),
     );
   }, [error, docKey]);
+
+  useEffect(() => {
+    const v = view.current;
+    if (!v) return;
+    const ranges = highlight ?? [];
+    v.dispatch({ effects: setHighlight.of(ranges) });
+    const first = ranges[0];
+    if (first && first.from <= v.state.doc.length && !v.hasFocus) {
+      v.dispatch({ effects: EditorView.scrollIntoView(first.from, { y: "center" }) });
+    }
+  }, [highlight, docKey]);
 
   return <div ref={host} className="h-full min-h-0 overflow-hidden" data-testid="editor" />;
 }
