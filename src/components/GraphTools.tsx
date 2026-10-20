@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { HealthResult } from "../lib/health";
 import {
   ArrowDown,
   ArrowLeftRight,
@@ -22,6 +23,9 @@ import {
   X,
   Layers,
   Focus,
+  Loader2,
+  Activity,
+  ExternalLink,
 } from "lucide-react";
 import type { FlowModel } from "../lib/flow/parse";
 import type { Direction } from "../lib/flow/view";
@@ -203,6 +207,9 @@ export function Inspector({
   renameKey,
   connecting,
   onClose,
+  health,
+  checking,
+  onCheck,
 }: {
   model: FlowModel;
   selection: Selection;
@@ -212,6 +219,9 @@ export function Inspector({
   renameKey: number;
   connecting: boolean;
   onClose: () => void;
+  health?: Map<string, HealthResult>;
+  checking?: boolean;
+  onCheck?: (urls: string[]) => void;
 }) {
   if (!selection) return null;
   let body: ReactNode = null;
@@ -235,6 +245,7 @@ export function Inspector({
         <ConnectionList title="Outgoing" icon={<ArrowRight className="size-3" />} edges={out} other={(e) => e.to} model={model} actions={actions} />
         <ConnectionList title="Incoming" icon={<ArrowLeftRight className="size-3 rotate-180" />} edges={inc} other={(e) => e.from} model={model} actions={actions} />
         <ConnectPicker model={model} from={n.id} actions={actions} connecting={connecting} />
+        <LinksSection urls={model.links.get(n.id)?.urls ?? []} health={health} checking={checking} onCheck={onCheck} />
         <div className="flex flex-wrap gap-1.5 border-t border-zinc-100 pt-3 dark:border-zinc-800">
           <ActionButton icon={<Group className="size-3.5" />} onClick={() => actions.groupNode(n.id)} title="Wrap this node in a new group">
             New group
@@ -508,6 +519,10 @@ export function GraphToolbar({
   onAddNode,
   connecting,
   onCancelConnect,
+  linkUrls = [],
+  health,
+  checking,
+  onCheck,
 }: {
   model: FlowModel;
   collapsed: Set<string>;
@@ -520,6 +535,10 @@ export function GraphToolbar({
   onAddNode: () => void;
   connecting: string | null;
   onCancelConnect: () => void;
+  linkUrls?: string[];
+  health?: Map<string, HealthResult>;
+  checking?: boolean;
+  onCheck?: (urls: string[]) => void;
 }) {
   const groups = groupOptions(model);
   const topLevel = groups.filter((g) => g.depth === 0).map((g) => g.id);
@@ -632,6 +651,16 @@ export function GraphToolbar({
         <span className="hidden sm:inline">Node</span>
       </ToolButton>
 
+      {linkUrls.length > 0 && (
+        <ToolButton onClick={() => !checking && onCheck?.(linkUrls)} title="Check whether this diagram's URLs are reachable from your browser">
+          {checking ? <Loader2 className="size-4 animate-spin" /> : <Activity className="size-4" />}
+          <span className="hidden sm:inline">{checking ? "Checking…" : `Check links (${linkUrls.length})`}</span>
+          {!checking && lastChecked(linkUrls, health) && (
+            <span className="hidden text-xs font-normal text-zinc-500 md:inline dark:text-zinc-400">· {lastChecked(linkUrls, health)}</span>
+          )}
+        </ToolButton>
+      )}
+
       {connecting && (
         <div className="flex items-center gap-2 rounded-xl bg-cyan-600 py-1 pl-3 pr-1 text-xs font-medium text-white shadow-sm">
           <Link2 className="size-3.5" /> Click a node to connect from “{nodeTitle(model, connecting)}”
@@ -648,6 +677,95 @@ export function GraphToolbar({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function lastChecked(urls: string[], health?: Map<string, HealthResult>): string | null {
+  let max = 0;
+  for (const u of urls) max = Math.max(max, health?.get(u)?.checkedAt ?? 0);
+  if (!max) return null;
+  return new Date(max).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+const DOT: Record<string, string> = {
+  up: "bg-emerald-500",
+  down: "bg-red-500",
+  timeout: "bg-amber-500",
+  checking: "bg-zinc-400 animate-pulse",
+};
+
+function StatusDot({ result }: { result?: HealthResult }) {
+  const label = result ? result.status : "not checked";
+  return (
+    <span
+      role="img"
+      aria-label={`Status: ${label}`}
+      title={result?.error ? `${label}: ${result.error}` : label}
+      className={cx(
+        "inline-block size-2.5 shrink-0 rounded-full",
+        result ? DOT[result.status] : "border border-zinc-400 dark:border-zinc-500",
+      )}
+    />
+  );
+}
+
+function LinksSection({
+  urls,
+  health,
+  checking,
+  onCheck,
+}: {
+  urls: { label: string; url: string }[];
+  health?: Map<string, HealthResult>;
+  checking?: boolean;
+  onCheck?: (urls: string[]) => void;
+}) {
+  if (urls.length === 0) return null;
+  return (
+    <div className="space-y-1.5 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Links</span>
+        {onCheck && (
+          <button
+            type="button"
+            disabled={checking}
+            onClick={() => onCheck(urls.map((u) => u.url))}
+            title="Pings these URLs from your browser"
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50 disabled:opacity-50 dark:text-cyan-300 dark:hover:bg-cyan-950/50"
+          >
+            {checking ? <Loader2 className="size-3 animate-spin" /> : <Activity className="size-3" />}
+            Check
+          </button>
+        )}
+      </div>
+      <ul className="space-y-1">
+        {urls.map(({ label, url }) => {
+          const r = health?.get(url);
+          return (
+            <li key={url} className="flex items-center gap-2 text-xs">
+              <StatusDot result={r} />
+              <div className="min-w-0 flex-1">
+                {label && label !== url && <div className="truncate font-medium text-zinc-700 dark:text-zinc-200">{label}</div>}
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={url}
+                  className="flex items-center gap-1 truncate text-cyan-700 hover:underline dark:text-cyan-300"
+                >
+                  <ExternalLink className="size-3 shrink-0" />
+                  <span className="truncate">{url.replace(/^https?:\/\//, "")}</span>
+                </a>
+              </div>
+              {r?.latencyMs != null && r.status !== "checking" && (
+                <span className="shrink-0 tabular-nums text-zinc-500 dark:text-zinc-400">{r.latencyMs} ms</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">Pings from your browser: shows what you can reach, not a server-side health check.</p>
     </div>
   );
 }

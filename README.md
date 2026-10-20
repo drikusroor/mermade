@@ -41,6 +41,32 @@ A fast, private Mermaid diagram editor that runs entirely in your browser. There
   - Choose the font, line style (rounded, smooth, straight or step), spacing, hand-drawn rendering, and the ELK layout engine, which usually untangles busy graphs.
   - The design is saved per diagram, and exports include it.
 - **Responsive:** on phones, you switch between Code and Preview with tabs.
+- **Node links and health checks:** select a node to see its URLs in the inspector. **Check links** puts a status dot on each linked node.
+
+## Node links & health checks
+
+Attach URLs to flowchart nodes with Mermaid's own `click` syntax. The click URL is labelled PRD. Put extra URLs in the tooltip as `Label: https://…` segments separated by `|`:
+
+```mermaid
+flowchart LR
+  API[Orders API]
+  click API href "https://api.example.com" "Staging: https://staging-api.example.com | Docs: https://docs.example.com/api"
+```
+
+When you select a node, the inspector lists its links. **Check links** (in the toolbar) requests each URL once from your browser. A dot then appears at the top right of each linked node:
+
+| Dot | Meaning |
+|---|---|
+| Green | Every URL answered |
+| Amber | Some URLs answered |
+| Red | No URL answered |
+| None | Not checked yet |
+
+What a check can and cannot tell you:
+
+- **A check tests whether a URL is reachable, not whether the service is healthy.** Requests are `no-cors`, so the response is opaque and an HTTP 500 still counts as up. Down means a DNS, connection or TLS error, or no answer within the timeout.
+- **A check shows what *you* can reach.** Private hosts need your VPN. Chrome's Local Network Access may block private hosts from a hosted mermade, so run it locally (`bun run dev`). On an `https://` page, `http://` URLs are blocked as mixed content and read as down.
+- **Nothing runs on its own and nothing is stored.** Checks run only when you click, and the results disappear on reload or when you edit the diagram.
 
 ## Development
 

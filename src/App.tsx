@@ -9,6 +9,7 @@ import { GraphToolbar, Inspector } from "./components/GraphTools";
 import { useGraph } from "./hooks/useGraph";
 import { compileDesign, type Design } from "./lib/design";
 import { tryParseFlow, type FlowModel } from "./lib/flow/parse";
+import { checkAll, type HealthResult } from "./lib/health";
 import type { MermaidConfig } from "mermaid";
 import { ImportDialog } from "./components/ImportDialog";
 import { ExportMenu, type ExportAction } from "./components/ExportMenu";
@@ -216,6 +217,41 @@ export function App() {
   const patchCode = useCallback((c: string) => patchDiagram(activeIdRef.current, { code: c }), [patchDiagram]);
   const patchView = useCallback((v: DiagramView) => patchDiagram(activeIdRef.current, { view: v }), [patchDiagram]);
   const g = useGraph({ active, patchCode, patchView, toast });
+
+  /* ---------------- link health ---------------- */
+
+  const [health, setHealth] = useState<Map<string, HealthResult>>(() => new Map());
+  const [checking, setChecking] = useState(false);
+  const linkUrls = useMemo(() => {
+    const all = new Set<string>();
+    for (const link of g.model?.links.values() ?? []) for (const u of link.urls) all.add(u.url);
+    return [...all].sort();
+  }, [g.model]);
+  const linkKey = `${activeIdRef.current}\n${linkUrls.join("\n")}`;
+  useEffect(() => {
+    setHealth(new Map());
+  }, [linkKey]);
+  const runChecks = useCallback(async (urls: string[]) => {
+    if (!urls.length) return;
+    setChecking(true);
+    setHealth((prev) => {
+      const next = new Map(prev);
+      for (const u of urls) next.set(u, { status: "checking" });
+      return next;
+    });
+    try {
+      await checkAll(urls, {
+        onResult: (url, result) =>
+          setHealth((prev) => {
+            const next = new Map(prev);
+            next.set(url, result);
+            return next;
+          }),
+      });
+    } finally {
+      setChecking(false);
+    }
+  }, []);
 
   /* ---------------- rendering ---------------- */
 
@@ -713,6 +749,7 @@ export function App() {
                   zoomTo={g.zoomTo}
                   parentOf={g.parentOf}
                   titleOf={g.title}
+                  health={health}
                   toolbar={
                     g.unsupported ? (
                       <div className="absolute left-3 top-3 z-10 rounded-xl bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-900 shadow-sm dark:bg-amber-900/60 dark:text-amber-100">
@@ -731,6 +768,10 @@ export function App() {
                         onAddNode={() => g.actions.addNode(g.selection?.kind === "group" ? g.selection.id : null)}
                         connecting={g.connectFrom}
                         onCancelConnect={() => g.setConnectFrom(null)}
+                        linkUrls={linkUrls}
+                        health={health}
+                        checking={checking}
+                        onCheck={runChecks}
                       />
                     )
                   }
@@ -745,6 +786,9 @@ export function App() {
                         renameKey={g.renameKey}
                         connecting={!!g.connectFrom}
                         onClose={() => g.setSelection(null)}
+                        health={health}
+                        checking={checking}
+                        onCheck={runChecks}
                       />
                     )
                   }

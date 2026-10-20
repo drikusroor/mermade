@@ -64,3 +64,43 @@ describe("parser details", () => {
     expect(plains).toEqual(["-->", "---", "-.->", "==>", "--o", "--x", "<-->", "~~~", "-->", "-->", "-.->", "==>", "---->", "-->", "-->"]);
   });
 });
+
+describe("click links", () => {
+  const code = [
+    "flowchart LR",
+    "  a[A] --> b[B]",
+    "  c[C]",
+    "  subgraph grp[Group]",
+    "    d[D]",
+    "  end",
+    '  click a "https://a.example"',
+    '  click b href "https://b.example" "B svc | ACC: https://b-acc.example" _blank',
+    "  click c call doThing()",
+    '  click grp "https://grp.example"',
+  ].join("\n");
+
+  test("both url forms land in links, call forms and subgraphs do not", () => {
+    const m = parseFlow(code);
+    expect([...m.links.keys()].sort()).toEqual(["a", "b"]);
+    expect(m.links.get("a")).toEqual({ href: "https://a.example", urls: [{ label: "PRD", url: "https://a.example" }] });
+    expect(m.links.get("b")).toEqual({
+      href: "https://b.example",
+      tooltip: "B svc | ACC: https://b-acc.example",
+      target: "_blank",
+      urls: [
+        { label: "PRD", url: "https://b.example" },
+        { label: "ACC", url: "https://b-acc.example" },
+      ],
+    });
+  });
+
+  test("click id spans are unchanged", () => {
+    const m = parseFlow(code);
+    for (const s of m.statements) {
+      if (s.kind !== "click") continue;
+      expect(code.slice(s.idStart, s.idEnd)).toBe(s.id);
+    }
+    const call = m.statements.find((s) => s.kind === "click" && s.id === "c");
+    expect(call && call.kind === "click" && call.href).toBeUndefined();
+  });
+});
