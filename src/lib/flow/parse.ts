@@ -1,3 +1,5 @@
+import { parseClick, parseLinkUrls, type NodeLink } from "./links";
+
 /**
  * A source-preserving parser for Mermaid flowcharts.
  *
@@ -56,7 +58,16 @@ export type Statement =
   | (StatementBase & { kind: "direction"; value: string })
   | (StatementBase & { kind: "class"; ids: { id: string; start: number; end: number }[]; className: string })
   | (StatementBase & { kind: "style"; id: string; idStart: number; idEnd: number })
-  | (StatementBase & { kind: "click"; id: string; idStart: number; idEnd: number })
+  | (StatementBase & {
+      kind: "click";
+      id: string;
+      idStart: number;
+      idEnd: number;
+      /** Set for the url forms only; `call`/`callback` forms leave these undefined. */
+      href?: string;
+      tooltip?: string;
+      target?: string;
+    })
   | (StatementBase & { kind: "linkStyle"; indices: { value: number; start: number; end: number }[] | "default" })
   | (StatementBase & { kind: "classDef" | "other" });
 
@@ -103,6 +114,8 @@ export interface FlowModel {
   subgraphOrder: string[];
   /** Offset where the diagram body (after front matter) starts. */
   bodyStart: number;
+  /** URL links from `click` statements, by node id (the last click on a node wins). */
+  links: Map<string, NodeLink>;
 }
 
 export class FlowParseError extends Error {}
@@ -535,7 +548,8 @@ export function parseFlow(code: string): FlowModel {
     }
     if ((m = text.match(/^(click[ \t]+)([^\s]+)/))) {
       const idStart = r.start + m[1]!.length;
-      statements.push({ ...base, kind: "click", id: m[2]!, idStart, idEnd: idStart + m[2]!.length });
+      const link = parseClick(text.slice(m[0].length));
+      statements.push({ ...base, kind: "click", id: m[2]!, idStart, idEnd: idStart + m[2]!.length, ...link });
       return;
     }
     if ((m = text.match(/^(linkStyle[ \t]+)([^\s]+)/))) {
@@ -655,7 +669,16 @@ export function parseFlow(code: string): FlowModel {
     }
   }
 
-  return { code, keyword, direction, statements, nodes, edges, subgraphs, subgraphOrder, bodyStart };
+  const links = new Map<string, NodeLink>();
+  for (const s of statements) {
+    if (s.kind !== "click" || !s.href || !nodes.has(s.id)) continue;
+    const link: NodeLink = { href: s.href, urls: parseLinkUrls(s.href, s.tooltip) };
+    if (s.tooltip !== undefined) link.tooltip = s.tooltip;
+    if (s.target !== undefined) link.target = s.target;
+    links.set(s.id, link);
+  }
+
+  return { code, keyword, direction, statements, nodes, edges, subgraphs, subgraphOrder, bodyStart, links };
 }
 
 /** Parse, returning null instead of throwing (for non-flowcharts or syntax Mermade can't handle). */

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { Maximize, Minus, Plus, Scan, AlertTriangle, Loader2 } from "lucide-react";
 import { IconButton } from "./ui";
 import type { FlowModel } from "../lib/flow/parse";
+import { rollup, type HealthResult, type Rollup } from "../lib/health";
 import { hitTest, indexSvg, type Hit, type SvgIndex } from "../lib/flow/svgIndex";
 
 export type Selection = { kind: "node"; id: string } | { kind: "group"; id: string } | { kind: "edge"; index: number } | null;
@@ -38,6 +39,8 @@ interface PreviewProps {
   /** Parent group of each node/group in the source (for drop targets). */
   parentOf: (id: string) => string | null;
   titleOf: (id: string) => string;
+  /** Reachability results per URL, for the status dots on linked nodes. */
+  health?: Map<string, HealthResult>;
   toolbar?: ReactNode;
   inspector?: ReactNode;
 }
@@ -59,8 +62,17 @@ const MAX = 8;
 const clamp = (v: number) => Math.min(MAX, Math.max(MIN, v));
 const DRAG_THRESHOLD = 5;
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+const DOT_FILL: Record<Rollup, string> = { green: "#10b981", amber: "#f59e0b", red: "#ef4444", grey: "none" };
+const DOT_TITLE: Record<Rollup, string> = {
+  green: "All links reachable",
+  amber: "Some links unreachable",
+  red: "Links unreachable",
+  grey: "Not checked yet",
+};
+
 export function Preview(props: PreviewProps) {
-  const { docKey, svg, error, loading, canvas, viewModel, selection, highlight, cursorNodes, connectFrom } = props;
+  const { docKey, svg, error, loading, canvas, viewModel, selection, highlight, cursorNodes, connectFrom, health } = props;
   const viewport = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const size = useRef({ w: 0, h: 0 });
@@ -152,6 +164,39 @@ export function Preview(props: PreviewProps) {
     cursorNodes.forEach((id) => idx.nodes.get(id)?.classList.add("mm-cursor"));
     if (connectFrom) idx.nodes.get(connectFrom)?.classList.add("mm-source");
   }, [indexVersion, selection, highlight, cursorNodes, connectFrom]);
+
+  // Reachability dots on nodes that carry URLs.
+  useEffect(() => {
+    const idx = index.current;
+    if (!idx) return;
+    idx.root.querySelectorAll(".mm-health-dot").forEach((e) => e.remove());
+    const results = health ?? new Map<string, HealthResult>();
+    for (const [id, link] of viewModel?.links ?? []) {
+      if (!link.urls.length) continue;
+      const el = idx.nodes.get(id);
+      if (!el) continue;
+      let box: { x: number; y: number; width: number; height: number };
+      try {
+        box = el.getBBox();
+      } catch {
+        continue;
+      }
+      const status = rollup(link.urls.map((u) => u.url), results);
+      const dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("class", "mm-health-dot");
+      dot.setAttribute("cx", String(box.x + box.width - 2));
+      dot.setAttribute("cy", String(box.y + 2));
+      dot.setAttribute("r", "5");
+      dot.setAttribute("fill", DOT_FILL[status]);
+      dot.setAttribute("stroke", status === "grey" ? "#a1a1aa" : "#ffffff");
+      dot.setAttribute("stroke-width", "1.5");
+      dot.style.pointerEvents = "none";
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent = DOT_TITLE[status];
+      dot.appendChild(title);
+      el.appendChild(dot);
+    }
+  }, [indexVersion, viewModel, health]);
 
   // Keep the diagram fitted on resize until the user pans or zooms.
   useEffect(() => {
